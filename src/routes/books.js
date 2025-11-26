@@ -34,4 +34,62 @@ router.get("/:id", async (req, res) => {
   }
 });
 
+// POST /api/books - create a new book
+// Expected JSON body:
+// {
+//   "title": "My Book",
+//   "summary": "Short summary",
+//   "isbn": "978...",
+//   "authorId": 1,
+//   "genreIds": [1,2],           // optional - array of existing genre ids
+//   "instances": [               // optional - array of instances
+//     { "imprint": "1st ed.", "status": "Available", "dueBack": null }
+//   ]
+// }
+router.post("/", async (req, res) => {
+  const { title, summary, isbn, authorId, genreIds = [], instances = [] } = req.body;
+
+  if (!title || !isbn || !authorId) {
+    return res.status(400).json({ error: "Missing required fields: title, isbn, authorId" });
+  }
+
+  try {
+    // verify author exists
+    const author = await prisma.author.findUnique({ where: { id: Number(authorId) } });
+    if (!author) return res.status(400).json({ error: "Invalid authorId" });
+
+    // verify genres exist (if provided)
+    if (genreIds.length) {
+      const found = await prisma.genre.findMany({ where: { id: { in: genreIds.map(n => Number(n)) } } });
+      if (found.length !== genreIds.length) {
+        return res.status(400).json({ error: "One or more genreIds are invalid" });
+      }
+    }
+
+    // build nested create payload
+    const data = {
+      title,
+      summary: summary || null,
+      isbn,
+      author: { connect: { id: Number(authorId) } },
+      instances: instances.length ? { create: instances.map(i => ({
+        imprint: i.imprint || null,
+        status: i.status || "Available",
+        dueBack: i.dueBack ? new Date(i.dueBack) : null
+      })) } : undefined,
+      genres: genreIds.length ? { create: genreIds.map(gid => ({ genre: { connect: { id: Number(gid) } } })) } : undefined
+    };
+
+    const book = await prisma.book.create({ data, include: { author: true, instances: true, genres: { include: { genre: true } } } });
+    res.status(201).json(book);
+  } catch (err) {
+    console.error(err);
+    if (err.code === "P2002") {
+      // unique constraint, e.g., isbn unique
+      return res.status(400).json({ error: "Duplicate entry (maybe isbn already exists)" });
+    }
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 module.exports = router;
